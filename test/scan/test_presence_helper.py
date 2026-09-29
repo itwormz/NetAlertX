@@ -32,7 +32,7 @@ import pytest
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", "server"))
 
-from scan.presence import current_scan_presence_condition  # noqa: E402
+from scan.presence import current_scan_presence_condition, nic_derived_presence_condition  # noqa: E402
 from scan import device_handling  # noqa: E402
 from scan import session_events  # noqa: E402
 
@@ -66,6 +66,35 @@ class TestHelperCorrectness:
         """presence_scan is this helper's own internal subquery alias."""
         with pytest.raises(ValueError):
             current_scan_presence_condition(bad_value)
+
+
+class TestNicDerivedHelperCorrectness:
+    """nic_derived_presence_condition() - see nic-parent-orphan-disconnect-events
+    PRD Design §1. Same trust-boundary checks as current_scan_presence_condition()."""
+
+    def test_returns_expected_sql_fragment(self):
+        result = nic_derived_presence_condition("devMac")
+        assert "EXISTS (" in result
+        assert "SELECT 1 FROM Devices AS nic_parent" in result
+        assert "nic_parent.devMac = devMac" in result
+        assert "devReqNicsOnline" in result
+
+    @pytest.mark.parametrize("bad_value", [
+        "devMac; DROP TABLE Devices--",
+        "devMac OR 1=1",
+        "'; DELETE FROM Devices; --",
+        "devMac)",
+        "",
+        "123devMac",
+    ])
+    def test_rejects_non_identifier_input(self, bad_value):
+        with pytest.raises(ValueError):
+            nic_derived_presence_condition(bad_value)
+
+    @pytest.mark.parametrize("bad_value", ["presence_scan", "presence_scan.scanMac"])
+    def test_rejects_presence_scan_qualifier(self, bad_value):
+        with pytest.raises(ValueError):
+            nic_derived_presence_condition(bad_value)
 
 
 class TestQualifiedColumnExecutesCorrectly:
@@ -123,3 +152,24 @@ class TestConsumersCallTheHelper:
         MIN(scanLastIP) aggregation on purpose (see module docstring), so
         this asserts >= 3, not == 4."""
         assert _call_count(session_events.insert_events) >= 3
+
+
+class TestConsumersCallTheNicHelper:
+    """Guards the four sites nic_derived_presence_condition() was OR-composed
+    into (nic-parent-orphan-disconnect-events PRD) - both Device Down queries,
+    Disconnected, and update_devLastConnection_from_CurrentScan(). New
+    Connections/IP Changed are deliberately not touched - see that PRD's
+    Non-goals."""
+
+    def test_update_dev_last_connection_calls_nic_helper_once(self):
+        assert _call_count(
+            device_handling.update_devLastConnection_from_CurrentScan,
+            target_name="nic_derived_presence_condition",
+        ) == 1
+
+    def test_insert_events_calls_nic_helper_exactly_three_times(self):
+        """Both Device Down queries + Disconnected - not New Connections/IP Changed."""
+        assert _call_count(
+            session_events.insert_events,
+            target_name="nic_derived_presence_condition",
+        ) == 3

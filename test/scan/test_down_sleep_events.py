@@ -33,6 +33,10 @@ from db_test_helpers import (  # noqa: E402
     minutes_ago as _minutes_ago,
     insert_device as _insert_device,
     down_event_macs as _down_event_macs,
+    make_device_dict as _make_device_dict,
+    insert_device_from_dict as _insert_device_from_dict,
+    make_current_scan_dict as _make_current_scan_dict,
+    insert_current_scan_row_from_dict as _insert_current_scan_row_from_dict,
     DummyDB,
 )
 
@@ -563,3 +567,190 @@ class TestInsertEventsForceOnline:
         assert "ff:00:00:00:00:06" in _down_event_macs(cur), (
             "forced-offline device must still generate 'Device Down' when absent"
         )
+
+
+# ---------------------------------------------------------------------------
+# Layer 1d: insert_events() — NIC-derived presence suppression
+#
+# nic-parent-orphan-disconnect-events PRD: a parent device with NIC children
+# (devParentRelType='nic') must not get Device Down/Disconnected events just
+# because it has no direct CurrentScan row of its own, as long as its NICs
+# satisfy devReqNicsOnline (ANY/ALL) against CurrentScan this cycle. Test
+# names/setup follow that PRD's Tests section parity matrix directly.
+# ---------------------------------------------------------------------------
+
+def _setup_parent_with_nics(conn, parent_mac, nic_specs, req_nics_online=0,
+                            parent_present_last_scan=1, alert_down=1,
+                            parent_has_own_scan_row=False):
+    """
+    Insert a parent device plus its NIC children, and CurrentScan rows for
+    whichever NICs (and optionally the parent) are present this cycle.
+
+    nic_specs: list of (mac, present_this_cycle) tuples. A NIC not present
+    this cycle gets no CurrentScan row at all (chosen as the PRD's single
+    primary representation of "absent", not the scanPresence=0 variant).
+    """
+    _insert_device_from_dict(conn, _make_device_dict(
+        parent_mac,
+        devPresentLastScan=parent_present_last_scan,
+        devAlertDown=alert_down,
+        devParentMAC="",
+        devParentRelType="",
+        devReqNicsOnline=req_nics_online,
+    ))
+    for nic_mac, present in nic_specs:
+        _insert_device_from_dict(conn, _make_device_dict(
+            nic_mac,
+            devPresentLastScan=1 if present else 0,
+            devAlertDown=0,
+            devParentMAC=parent_mac,
+            devParentRelType="nic",
+            devReqNicsOnline=0,
+        ))
+        if present:
+            _insert_current_scan_row_from_dict(conn, _make_current_scan_dict(nic_mac, scanPresence=1))
+    if parent_has_own_scan_row:
+        _insert_current_scan_row_from_dict(conn, _make_current_scan_dict(parent_mac, scanPresence=1))
+    conn.commit()
+
+
+class TestInsertEventsNicDerivedPresence:
+
+    def test_device_down_suppressed_one_nic_present(self):
+        conn = _make_db()
+        _setup_parent_with_nics(conn, "aa:11:00:00:00:01", [("bb:11:00:00:00:01", True)])
+
+        insert_events(DummyDB(conn))
+
+        assert "aa:11:00:00:00:01" not in _down_event_macs(conn.cursor()), (
+            "parent with a present NIC child must not get a spurious 'Device Down' event"
+        )
+
+    def test_disconnected_suppressed_one_nic_present(self):
+        conn = _make_db()
+        _setup_parent_with_nics(conn, "aa:11:00:00:00:02", [("bb:11:00:00:00:02", True)],
+                                alert_down=0)
+
+        insert_events(DummyDB(conn))
+
+        cur = conn.cursor()
+        cur.execute("SELECT eveEventType FROM Events WHERE eveMac = ?", ("aa:11:00:00:00:02",))
+        event_types = [r["eveEventType"] for r in cur.fetchall()]
+        assert "Disconnected" not in event_types, (
+            f"expected no 'Disconnected' event, got event types: {event_types}"
+        )
+
+    def test_still_fires_when_nic_genuinely_absent(self):
+        """Regression guard: this PRD must not silently suppress a real down
+        transition - no CurrentScan row for the parent or its only NIC."""
+        conn = _make_db()
+        _setup_parent_with_nics(conn, "aa:11:00:00:00:03", [("bb:11:00:00:00:03", False)])
+
+        insert_events(DummyDB(conn))
+
+        assert "aa:11:00:00:00:03" in _down_event_macs(conn.cursor())
+
+    def test_all_mode_one_nic_missing_still_fires(self):
+        """Mirrors test_req_all_mode_partial_nics_does_not_raise_absent_parent
+        in test_nic_presence.py - same ANY/ALL contract, different pipeline point."""
+        conn = _make_db()
+        _setup_parent_with_nics(
+            conn, "aa:11:00:00:00:04",
+            [("bb:11:00:00:00:04", True), ("cc:11:00:00:00:04", False)],
+            req_nics_online=1,
+        )
+
+        insert_events(DummyDB(conn))
+
+        assert "aa:11:00:00:00:04" in _down_event_macs(conn.cursor())
+
+    def test_all_mode_all_nics_present_suppresses(self):
+        conn = _make_db()
+        _setup_parent_with_nics(
+            conn, "aa:11:00:00:00:05",
+            [("bb:11:00:00:00:05", True), ("cc:11:00:00:00:05", True)],
+            req_nics_online=1,
+        )
+
+        insert_events(DummyDB(conn))
+
+        assert "aa:11:00:00:00:05" not in _down_event_macs(conn.cursor())
+
+    def test_any_mode_explicit_zero_one_nic_present_suppresses(self):
+        """devReqNicsOnline=0 explicitly (not NULL, not 1) - parity with the
+        real Python rule (str(device.get('devReqNicsOnline')) == '1' means
+        everything else, including 0, is ANY mode)."""
+        conn = _make_db()
+        _setup_parent_with_nics(
+            conn, "aa:11:00:00:00:06", [("bb:11:00:00:00:06", True)], req_nics_online=0,
+        )
+
+        insert_events(DummyDB(conn))
+
+        assert "aa:11:00:00:00:06" not in _down_event_macs(conn.cursor())
+
+    def test_null_req_nics_online_one_nic_present_suppresses(self):
+        """NULL defaults to ANY mode (str(None) == '1' is False in Python)."""
+        conn = _make_db()
+        _setup_parent_with_nics(
+            conn, "aa:11:00:00:00:07", [("bb:11:00:00:00:07", True)], req_nics_online=None,
+        )
+
+        insert_events(DummyDB(conn))
+
+        assert "aa:11:00:00:00:07" not in _down_event_macs(conn.cursor())
+
+    def test_null_req_nics_online_nic_absent_still_fires(self):
+        """Negative NULL parity - the complement of the case above. Guards
+        against a future change silently turning NULL into 'always present'
+        or 'ALL' instead of ANY."""
+        conn = _make_db()
+        _setup_parent_with_nics(
+            conn, "aa:11:00:00:00:08", [("bb:11:00:00:00:08", False)], req_nics_online=None,
+        )
+
+        insert_events(DummyDB(conn))
+
+        assert "aa:11:00:00:00:08" in _down_event_macs(conn.cursor())
+
+    def test_any_mode_two_nics_one_present_suppresses(self):
+        """Proves ANY semantics specifically (not 'all NICs present', which
+        the ALL-mode tests above can't distinguish on their own) - two NICs,
+        only one present, devReqNicsOnline=0."""
+        conn = _make_db()
+        _setup_parent_with_nics(
+            conn, "aa:11:00:00:00:09",
+            [("bb:11:00:00:00:09", True), ("cc:11:00:00:00:09", False)],
+            req_nics_online=0,
+        )
+
+        insert_events(DummyDB(conn))
+
+        assert "aa:11:00:00:00:09" not in _down_event_macs(conn.cursor())
+
+    def test_direct_parent_presence_overrides_regardless_of_nic_state(self):
+        """The new OR-composed helper must not interfere with the
+        pre-existing path: a parent with its own presence-asserting
+        CurrentScan row this cycle is suppressed via
+        current_scan_presence_condition() alone, even with every NIC absent."""
+        conn = _make_db()
+        _setup_parent_with_nics(
+            conn, "aa:11:00:00:00:10", [("bb:11:00:00:00:10", False)],
+            parent_has_own_scan_row=True,
+        )
+
+        insert_events(DummyDB(conn))
+
+        assert "aa:11:00:00:00:10" not in _down_event_macs(conn.cursor())
+
+    def test_no_nic_children_unaffected(self):
+        """Plain device, no devParentMAC - existing behavior (event fires
+        exactly like it did before this PRD) must be untouched."""
+        conn = _make_db()
+        cur = conn.cursor()
+        _insert_device(cur, "aa:11:00:00:00:11", alert_down=1, present_last_scan=1)
+        conn.commit()
+
+        insert_events(DummyDB(conn))
+
+        assert "aa:11:00:00:00:11" in _down_event_macs(conn.cursor())

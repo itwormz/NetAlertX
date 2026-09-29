@@ -40,3 +40,67 @@ def current_scan_presence_condition(mac_column: str) -> str:
         SELECT 1 FROM CurrentScan AS presence_scan
         WHERE presence_scan.scanMac = {mac_column} AND presence_scan.scanPresence = 1
     )"""
+
+
+def nic_derived_presence_condition(mac_column: str) -> str:
+    """SQL fragment answering exactly: 'would NIC reconciliation
+    (update_devPresentLastScan_based_on_nics(), step 7 of process_scan())
+    consider mac_column present, based on this cycle's CurrentScan rows for
+    its NIC children (devParentRelType = 'nic') and its own devReqNicsOnline
+    (ANY vs ALL)?' It intentionally does not read or write
+    Devices.devPresentLastScan - see nic-parent-orphan-disconnect-events.md's
+    Invariant for why that's still equivalent to step 7's own answer within
+    the same cycle (step 6 sets every device's devPresentLastScan, NIC
+    children included, to exactly current_scan_presence_condition()'s value
+    for this cycle, before step 7 ever reads it). Not a general-purpose
+    presence predicate - it answers this one question, nothing broader.
+
+    Deliberately NOT a replacement for current_scan_presence_condition() -
+    composed with it via OR at each call site (insert_events()'s Device
+    Down/Disconnected queries, update_devLastConnection_from_CurrentScan()).
+    Deliberately does NOT replicate update_devPresentLastScan_based_on_nics()'s
+    "parent was directly detected this scan" carve-out: that carve-out is
+    redundant here, because a directly-detected parent already satisfies
+    current_scan_presence_condition() on its own, and the two are OR'd.
+
+    mac_column must be a trusted, hardcoded SQL column/table.column reference
+    written by NetAlertX code - same constraint as
+    current_scan_presence_condition(), enforced the same way.
+    """
+    if not _SQL_IDENTIFIER_RE.match(mac_column):
+        raise ValueError(f"mac_column must be a plain identifier, got: {mac_column!r}")
+    if mac_column == "presence_scan" or mac_column.startswith("presence_scan."):
+        raise ValueError(
+            f"mac_column must not reference presence_scan - that's "
+            f"current_scan_presence_condition()'s own internal subquery "
+            f"alias, got: {mac_column!r}"
+        )
+
+    return f"""EXISTS (
+        SELECT 1 FROM Devices AS nic_parent
+        WHERE nic_parent.devMac = {mac_column}
+          AND (
+                (
+                    IFNULL(CAST(nic_parent.devReqNicsOnline AS TEXT), '') = '1'
+                    AND EXISTS (SELECT 1 FROM Devices AS any_nic
+                                WHERE any_nic.devParentMAC = nic_parent.devMac
+                                  AND any_nic.devParentRelType = 'nic')
+                    AND NOT EXISTS (
+                        SELECT 1 FROM Devices AS nic
+                        WHERE nic.devParentMAC = nic_parent.devMac
+                          AND nic.devParentRelType = 'nic'
+                          AND NOT {current_scan_presence_condition("nic.devMac")}
+                    )
+                )
+                OR
+                (
+                    IFNULL(CAST(nic_parent.devReqNicsOnline AS TEXT), '') != '1'
+                    AND EXISTS (
+                        SELECT 1 FROM Devices AS nic
+                        WHERE nic.devParentMAC = nic_parent.devMac
+                          AND nic.devParentRelType = 'nic'
+                          AND {current_scan_presence_condition("nic.devMac")}
+                    )
+                )
+          )
+    )"""

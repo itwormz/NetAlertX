@@ -20,6 +20,8 @@ from db_test_helpers import (  # noqa: E402
     make_current_scan_dict,
     insert_current_scan_row_from_dict,
     insert_device,
+    make_device_dict,
+    insert_device_from_dict,
     minutes_ago,
     DummyDB,
     down_event_macs,
@@ -124,6 +126,32 @@ class TestDevLastConnectionRespectsPresence:
 
         row = conn.execute(
             "SELECT devLastConnection FROM Devices WHERE devMac = ?", (MAC,)
+        ).fetchone()
+        assert row["devLastConnection"] != "2020-01-01 00:00:00"
+
+    def test_nic_derived_presence_still_bumps_last_connection(self):
+        """nic-parent-orphan-disconnect-events PRD: a parent with no direct
+        CurrentScan row, but a present NIC child, must still advance
+        devLastConnection - it is not actually offline."""
+        conn = make_db()
+        parent_mac = "aa:22:00:00:00:01"
+        nic_mac = "bb:22:00:00:00:01"
+        insert_device_from_dict(conn, make_device_dict(
+            parent_mac, devLastConnection="2020-01-01 00:00:00",
+            devParentMAC="", devParentRelType="", devReqNicsOnline=0,
+        ))
+        insert_device_from_dict(conn, make_device_dict(
+            nic_mac, devParentMAC=parent_mac, devParentRelType="nic", devReqNicsOnline=0,
+        ))
+        insert_current_scan_row_from_dict(
+            conn, make_current_scan_dict(nic_mac, scanPresence=1)
+        )
+        db = DummyDB(conn)
+
+        device_handling.update_devLastConnection_from_CurrentScan(db)
+
+        row = conn.execute(
+            "SELECT devLastConnection FROM Devices WHERE devMac = ?", (parent_mac,)
         ).fetchone()
         assert row["devLastConnection"] != "2020-01-01 00:00:00"
 

@@ -14,7 +14,7 @@ from scan.device_handling import (
     update_presence_from_CurrentScan
 )
 from helper import get_setting_value
-from scan.presence import current_scan_presence_condition
+from scan.presence import current_scan_presence_condition, nic_derived_presence_condition
 from db.db_helper import print_table_schema
 from utils.datetime_utils import timeNowUTC
 from logger import mylog, Logger
@@ -191,7 +191,8 @@ def insert_events(db):
                       AND devCanSleep = 0
                       AND devPresentLastScan = 1
                       AND {_SQL_NOT_FORCED_ONLINE}
-                      AND NOT {current_scan_presence_condition("devMac")} """)
+                      AND NOT ({current_scan_presence_condition("devMac")}
+                               OR {nic_derived_presence_condition("devMac")}) """)
 
     # Check device down – sleeping devices whose sleep window has expired
     mylog("debug", "[Events] - 1b - Devices down (sleep expired)")
@@ -205,7 +206,8 @@ def insert_events(db):
                       AND devIsSleeping = 0
                       AND devPresentLastScan = 0
                       AND {_SQL_NOT_FORCED_ONLINE}
-                      AND NOT {current_scan_presence_condition("devMac")}
+                      AND NOT ({current_scan_presence_condition("devMac")}
+                               OR {nic_derived_presence_condition("devMac")})
                       AND NOT EXISTS (SELECT 1 FROM Events
                                       WHERE eveMac = devMac
                                         AND eveEventType = 'Device Down'
@@ -270,7 +272,8 @@ def insert_events(db):
                     WHERE devAlertDown = 0
                       AND devPresentLastScan = 1
                       AND {_SQL_NOT_FORCED_ONLINE}
-                      AND NOT {current_scan_presence_condition("devMac")} """)
+                      AND NOT ({current_scan_presence_condition("devMac")}
+                               OR {nic_derived_presence_condition("devMac")}) """)
 
     # Check IP Changed
     mylog("debug", "[Events] - 4 - IP Changes")
