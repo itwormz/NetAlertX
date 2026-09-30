@@ -66,6 +66,19 @@ def nic_derived_presence_condition(mac_column: str) -> str:
     mac_column must be a trusted, hardcoded SQL column/table.column reference
     written by NetAlertX code - same constraint as
     current_scan_presence_condition(), enforced the same way.
+
+    The inner Devices scan is aliased as nic_presence_parent, not the more
+    obvious nic_parent, for the same shadowing reason
+    current_scan_presence_condition() aliases its own inner CurrentScan as
+    presence_scan rather than bare CurrentScan: a caller correlating this
+    condition from a query that itself aliases its row as nic_parent (a
+    natural name to pick, given this helper's own docstring uses it) would
+    otherwise have mac_column="nic_parent.devMac" resolve to this
+    subquery's own inner alias instead of the caller's outer row, collapsing
+    the comparison into an always-true same-row tautology - confirmed live
+    in this exact shape in nic-parent-reconnect-events.md's implementation
+    notes. mac_column may not reference nic_presence_parent for the same
+    reason presence_scan is guarded below.
     """
     if not _SQL_IDENTIFIER_RE.match(mac_column):
         raise ValueError(f"mac_column must be a plain identifier, got: {mac_column!r}")
@@ -75,29 +88,34 @@ def nic_derived_presence_condition(mac_column: str) -> str:
             f"current_scan_presence_condition()'s own internal subquery "
             f"alias, got: {mac_column!r}"
         )
+    if mac_column == "nic_presence_parent" or mac_column.startswith("nic_presence_parent."):
+        raise ValueError(
+            f"mac_column must not reference nic_presence_parent - that's "
+            f"this function's own internal subquery alias, got: {mac_column!r}"
+        )
 
     return f"""EXISTS (
-        SELECT 1 FROM Devices AS nic_parent
-        WHERE nic_parent.devMac = {mac_column}
+        SELECT 1 FROM Devices AS nic_presence_parent
+        WHERE nic_presence_parent.devMac = {mac_column}
           AND (
                 (
-                    IFNULL(CAST(nic_parent.devReqNicsOnline AS TEXT), '') = '1'
+                    IFNULL(CAST(nic_presence_parent.devReqNicsOnline AS TEXT), '') = '1'
                     AND EXISTS (SELECT 1 FROM Devices AS any_nic
-                                WHERE any_nic.devParentMAC = nic_parent.devMac
+                                WHERE any_nic.devParentMAC = nic_presence_parent.devMac
                                   AND any_nic.devParentRelType = 'nic')
                     AND NOT EXISTS (
                         SELECT 1 FROM Devices AS nic
-                        WHERE nic.devParentMAC = nic_parent.devMac
+                        WHERE nic.devParentMAC = nic_presence_parent.devMac
                           AND nic.devParentRelType = 'nic'
                           AND NOT {current_scan_presence_condition("nic.devMac")}
                     )
                 )
                 OR
                 (
-                    IFNULL(CAST(nic_parent.devReqNicsOnline AS TEXT), '') != '1'
+                    IFNULL(CAST(nic_presence_parent.devReqNicsOnline AS TEXT), '') != '1'
                     AND EXISTS (
                         SELECT 1 FROM Devices AS nic
-                        WHERE nic.devParentMAC = nic_parent.devMac
+                        WHERE nic.devParentMAC = nic_presence_parent.devMac
                           AND nic.devParentRelType = 'nic'
                           AND {current_scan_presence_condition("nic.devMac")}
                     )

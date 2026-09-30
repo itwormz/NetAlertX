@@ -75,8 +75,8 @@ class TestNicDerivedHelperCorrectness:
     def test_returns_expected_sql_fragment(self):
         result = nic_derived_presence_condition("devMac")
         assert "EXISTS (" in result
-        assert "SELECT 1 FROM Devices AS nic_parent" in result
-        assert "nic_parent.devMac = devMac" in result
+        assert "SELECT 1 FROM Devices AS nic_presence_parent" in result
+        assert "nic_presence_parent.devMac = devMac" in result
         assert "devReqNicsOnline" in result
 
     @pytest.mark.parametrize("bad_value", [
@@ -93,6 +93,14 @@ class TestNicDerivedHelperCorrectness:
 
     @pytest.mark.parametrize("bad_value", ["presence_scan", "presence_scan.scanMac"])
     def test_rejects_presence_scan_qualifier(self, bad_value):
+        with pytest.raises(ValueError):
+            nic_derived_presence_condition(bad_value)
+
+    @pytest.mark.parametrize("bad_value", ["nic_presence_parent", "nic_presence_parent.devMac"])
+    def test_rejects_own_internal_alias(self, bad_value):
+        """A caller referencing this function's own internal alias would hit
+        the exact shadowing bug that motivated the nic_parent ->
+        nic_presence_parent rename - see this module's docstring."""
         with pytest.raises(ValueError):
             nic_derived_presence_condition(bad_value)
 
@@ -117,6 +125,35 @@ class TestQualifiedColumnExecutesCorrectly:
         assert dict(rows) == {"aa": 1, "bb": 0}, (
             "each row must be checked against its own scanMac, not collapse "
             "into a table-wide 'does anything assert presence' check"
+        )
+
+    def test_nic_derived_condition_correlates_when_caller_aliases_nic_parent(self):
+        """Regression: nic_derived_presence_condition() used to alias its own
+        inner scan as nic_parent too, so a caller that (like insert_events()'s
+        NIC-derived reconnect query) aliases its own row as nic_parent got
+        mac_column="nic_parent.devMac" shadowed by the helper's own inner
+        alias - collapsing the EXISTS into a table-wide tautology instead of
+        a per-row check."""
+        conn = sqlite3.connect(":memory:")
+        conn.execute("""CREATE TABLE Devices (devMac TEXT, devReqNicsOnline INTEGER,
+                        devParentMAC TEXT, devParentRelType TEXT)""")
+        conn.execute("CREATE TABLE CurrentScan (scanMac TEXT, scanPresence INTEGER)")
+        conn.execute("INSERT INTO Devices VALUES ('aa', 0, NULL, NULL)")
+        conn.execute("INSERT INTO Devices VALUES ('aa-nic', 0, 'aa', 'nic')")
+        conn.execute("INSERT INTO CurrentScan VALUES ('aa-nic', 1)")  # aa's NIC is present
+        conn.execute("INSERT INTO Devices VALUES ('bb', 0, NULL, NULL)")
+        conn.execute("INSERT INTO Devices VALUES ('bb-nic', 0, 'bb', 'nic')")  # bb's NIC absent
+        conn.commit()
+
+        condition = nic_derived_presence_condition("nic_parent.devMac")
+        rows = conn.execute(
+            f"""SELECT devMac, {condition} AS is_nic_present FROM Devices AS nic_parent
+                WHERE devParentMAC IS NULL"""
+        ).fetchall()
+
+        assert dict(rows) == {"aa": 1, "bb": 0}, (
+            "each outer row must be checked against its own NIC children, not "
+            "collapse into a table-wide 'does any device have NIC presence' check"
         )
 
 

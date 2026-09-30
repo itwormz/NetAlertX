@@ -948,6 +948,28 @@ class TestInsertEventsNicDerivedReconnect:
 
         assert _event_types_for(conn, "aa:22:00:00:00:09") == []
 
+    def test_sibling_parent_with_absent_nics_not_falsely_reconnected(self):
+        """Regression: an alias collision inside nic_derived_presence_condition()
+        used to collapse its per-row check into a table-wide tautology - any
+        NIC-covered parent anywhere in Devices made every other absent parent
+        look NIC-derived-present too. A single-parent-per-DB test can't catch
+        this (there's nothing else in the table to falsely match against), so
+        this puts two sibling parents in one DB on purpose."""
+        conn = _make_db()
+        _setup_parent_with_nics(
+            conn, "aa:22:00:00:00:10", [("bb:22:00:00:00:10", True)],
+            parent_present_last_scan=0,
+        )
+        _setup_parent_with_nics(
+            conn, "aa:22:00:00:00:11", [("bb:22:00:00:00:11", False)],
+            parent_present_last_scan=0,
+        )
+
+        insert_events(DummyDB(conn))
+
+        assert _event_types_for(conn, "aa:22:00:00:00:10") == ["Connected"]
+        assert _event_types_for(conn, "aa:22:00:00:00:11") == []
+
     def test_orphan_pairing_closes_end_to_end(self):
         """The reporter's exact scenario (issue #1821):
         absent -> Disconnected -> NIC-present -> Connected -> absent again ->
