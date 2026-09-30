@@ -14,7 +14,7 @@ from scan.device_handling import (
     update_presence_from_CurrentScan
 )
 from helper import get_setting_value
-from scan.presence import current_scan_presence_condition
+from scan.presence import current_scan_presence_condition, nic_derived_presence_condition
 from db.db_helper import print_table_schema
 from utils.datetime_utils import timeNowUTC
 from logger import mylog, Logger
@@ -25,6 +25,24 @@ from const import NULL_EQUIVALENTS_SQL
 # Predicate used in every negative-event INSERT to skip forced-online devices.
 # Centralised here so all three event paths stay in sync.
 _SQL_NOT_FORCED_ONLINE = "LOWER(COALESCE(devForceStatus, '')) != 'online'"
+
+
+def _connect_event_type_case(event_type_expr, pending_expr):
+    """SQL CASE fragment shared by every insert_events() query that decides
+    Connected vs. Down Reconnected: 'Down Reconnected' iff the referenced
+    prior event was an unacknowledged Device Down, else 'Connected'.
+
+    event_type_expr/pending_expr are trusted, hardcoded SQL expressions (a
+    column reference or a scalar subquery) evaluating to the prior event's
+    eveEventType/evePendingAlertEmail - same trust-boundary contract as
+    current_scan_presence_condition()'s mac_column, not parameterized SQL.
+    Centralised here (like _SQL_NOT_FORCED_ONLINE above) so every connect-
+    side query classifies a reconnect the same way.
+    """
+    return f"""CASE
+                    WHEN {event_type_expr} = 'Device Down' AND {pending_expr} = 0 THEN 'Down Reconnected'
+                    ELSE 'Connected'
+                END"""
 
 
 # Make sure log level is initialized correctly
@@ -191,7 +209,8 @@ def insert_events(db):
                       AND devCanSleep = 0
                       AND devPresentLastScan = 1
                       AND {_SQL_NOT_FORCED_ONLINE}
-                      AND NOT {current_scan_presence_condition("devMac")} """)
+                      AND NOT ({current_scan_presence_condition("devMac")}
+                               OR {nic_derived_presence_condition("DevicesView.devMac")}) """)
 
     # Check device down – sleeping devices whose sleep window has expired
     mylog("debug", "[Events] - 1b - Devices down (sleep expired)")
@@ -205,7 +224,8 @@ def insert_events(db):
                       AND devIsSleeping = 0
                       AND devPresentLastScan = 0
                       AND {_SQL_NOT_FORCED_ONLINE}
-                      AND NOT {current_scan_presence_condition("devMac")}
+                      AND NOT ({current_scan_presence_condition("devMac")}
+                               OR {nic_derived_presence_condition("DevicesView.devMac")})
                       AND NOT EXISTS (SELECT 1 FROM Events
                                       WHERE eveMac = devMac
                                         AND eveEventType = 'Device Down'
@@ -232,10 +252,7 @@ def insert_events(db):
                                             eveEventType, eveAdditionalInfo,
                                             evePendingAlertEmail)
                         SELECT present_agg.scanMac, present_agg.scanLastIP, '{startTime}',
-                                        CASE
-                                            WHEN last_event.eveEventType = 'Device Down' and  last_event.evePendingAlertEmail = 0 THEN 'Down Reconnected'
-                                            ELSE 'Connected'
-                                        END,
+                                        {_connect_event_type_case("last_event.eveEventType", "last_event.evePendingAlertEmail")},
                                         '',
                                         CASE WHEN quiet_agg.scanQuiet = 1 THEN 0 ELSE 1 END
                         FROM (
@@ -259,6 +276,41 @@ def insert_events(db):
                               )
                         """)
 
+    # NIC-derived New Connections/Down Reconnected: fires for a parent with
+    # no CurrentScan row of its own but whose NIC children satisfy
+    # nic_derived_presence_condition(). Reads Events directly instead of
+    # LatestEventsPerMAC, which INNER JOINs CurrentScan and would silently
+    # return no row for every MAC this query targets.
+    mylog("debug", "[Events] - 2b - NIC-derived New Connections")
+    # ROWID DESC breaks eveDateTime ties (timeNowUTC() truncates to whole
+    # seconds) so both subqueries resolve to the same row.
+    _last_event_type = """(SELECT eveEventType FROM Events
+                            WHERE eveMac = nic_parent.devMac
+                            ORDER BY eveDateTime DESC, ROWID DESC LIMIT 1)"""
+    _last_event_pending = """(SELECT evePendingAlertEmail FROM Events
+                               WHERE eveMac = nic_parent.devMac
+                               ORDER BY eveDateTime DESC, ROWID DESC LIMIT 1)"""
+    sql.execute(f"""INSERT OR IGNORE INTO Events (eveMac, eveIp, eveDateTime,
+                        eveEventType, eveAdditionalInfo, evePendingAlertEmail)
+                    SELECT nic_parent.devMac, nic_parent.devLastIP, '{startTime}',
+                        {_connect_event_type_case(_last_event_type, _last_event_pending)},
+                        '',
+                        CASE WHEN EXISTS (
+                            SELECT 1 FROM Devices AS nic
+                            WHERE nic.devParentMAC = nic_parent.devMac
+                              AND nic.devParentRelType = 'nic'
+                              AND {current_scan_presence_condition("nic.devMac")}
+                              AND EXISTS (SELECT 1 FROM CurrentScan AS quiet_scan
+                                          WHERE quiet_scan.scanMac = nic.devMac
+                                            AND quiet_scan.scanNotificationMode = 'quiet')
+                        ) THEN 0 ELSE 1 END
+                    FROM Devices AS nic_parent
+                    WHERE IFNULL(nic_parent.devParentRelType, '') != 'nic'
+                      AND nic_parent.devPresentLastScan = 0
+                      AND NOT {current_scan_presence_condition("nic_parent.devMac")}
+                      AND {nic_derived_presence_condition("nic_parent.devMac")}
+                    """)
+
     # Check disconnections
     mylog("debug", "[Events] - 3 - Disconnections")
     sql.execute(f"""INSERT OR IGNORE INTO Events (eveMac, eveIp, eveDateTime,
@@ -270,7 +322,8 @@ def insert_events(db):
                     WHERE devAlertDown = 0
                       AND devPresentLastScan = 1
                       AND {_SQL_NOT_FORCED_ONLINE}
-                      AND NOT {current_scan_presence_condition("devMac")} """)
+                      AND NOT ({current_scan_presence_condition("devMac")}
+                               OR {nic_derived_presence_condition("Devices.devMac")}) """)
 
     # Check IP Changed
     mylog("debug", "[Events] - 4 - IP Changes")

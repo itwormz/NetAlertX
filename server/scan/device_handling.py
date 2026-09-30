@@ -9,7 +9,7 @@ from const import vendorsPath, vendorsPathNewest, sql_generateGuid, NULL_EQUIVAL
 from models.device_instance import DeviceInstance
 from scan.name_resolution import NameResolver
 from scan.device_heuristics import guess_icon, guess_type
-from scan.presence import current_scan_presence_condition
+from scan.presence import current_scan_presence_condition, nic_derived_presence_condition
 from db.db_helper import sanitize_SQL_input, list_to_where, safe_int
 from db.db_upgrade import PARENT_MAC_SENTINELS
 from db.authoritative_handler import (
@@ -229,7 +229,10 @@ def update_devLastConnection_from_CurrentScan(db):
     identity/inventory data (scanPresence = 0) must not make an offline
     device look recently connected. Same predicate as
     update_presence_from_CurrentScan(); found missing this check during
-    review of a shipped commit - see scan-pipeline-hardening.md.
+    review of a shipped commit - see scan-pipeline-hardening.md. Also
+    advances devLastConnection for a parent device whose presence is
+    NIC-derived this cycle (nic_derived_presence_condition()) - it has no
+    direct CurrentScan row of its own, but is not actually offline.
     """
     sql = db.sql
     startTime = timeNowUTC()
@@ -238,7 +241,8 @@ def update_devLastConnection_from_CurrentScan(db):
     sql.execute(f"""
         UPDATE Devices
         SET devLastConnection = '{startTime}'
-        WHERE {current_scan_presence_condition("devMac")}
+        WHERE ({current_scan_presence_condition("devMac")}
+               OR {nic_derived_presence_condition("Devices.devMac")})
     """)
 
 
