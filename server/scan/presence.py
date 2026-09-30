@@ -75,13 +75,35 @@ def nic_derived_presence_condition(mac_column: str) -> str:
     natural name to pick, given this helper's own docstring uses it) would
     otherwise have mac_column="nic_parent.devMac" resolve to this
     subquery's own inner alias instead of the caller's outer row, collapsing
-    the comparison into an always-true same-row tautology - confirmed live
-    in this exact shape in nic-parent-reconnect-events.md's implementation
-    notes. mac_column may not reference nic_presence_parent for the same
-    reason presence_scan is guarded below.
+    the comparison into an always-true same-row tautology. mac_column may
+    not reference nic_presence_parent for the same reason presence_scan is
+    guarded below.
+
+    mac_column MUST be qualified (e.g. "Devices.devMac", "DevicesView.devMac"
+    - never bare "devMac"), unlike current_scan_presence_condition() where a
+    bare column is fine. The reason is column, not alias, shadowing: this
+    function's own inner scan is `FROM Devices`, and Devices has a devMac
+    column, so an unqualified devMac in the substituted WHERE always
+    resolves to *this* function's own inner row - SQL prefers the innermost
+    enclosing scope for an unqualified name and only searches outward if the
+    inner scope has no matching column, so it never even reaches the
+    caller's outer row. (current_scan_presence_condition()'s inner scan is
+    `FROM CurrentScan`, which has no devMac column, so a bare "devMac" there
+    has nothing to bind to inward and correctly falls back outward.)
+    Confirmed live: an unqualified caller made every device with no NIC
+    children of its own read as NIC-derived-present, as soon as *any* other
+    device anywhere in Devices legitimately had one.
     """
     if not _SQL_IDENTIFIER_RE.match(mac_column):
         raise ValueError(f"mac_column must be a plain identifier, got: {mac_column!r}")
+    if "." not in mac_column:
+        raise ValueError(
+            f"mac_column must be qualified with the caller's own table/alias "
+            f"(e.g. 'Devices.devMac', not bare 'devMac') - Devices (this "
+            f"function's own inner scan) already has a devMac column, so an "
+            f"unqualified reference always binds to this function's own inner "
+            f"row instead of the caller's, got: {mac_column!r}"
+        )
     if mac_column == "presence_scan" or mac_column.startswith("presence_scan."):
         raise ValueError(
             f"mac_column must not reference presence_scan - that's "

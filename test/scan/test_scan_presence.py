@@ -155,6 +155,52 @@ class TestDevLastConnectionRespectsPresence:
         ).fetchone()
         assert row["devLastConnection"] != "2020-01-01 00:00:00"
 
+    def test_unrelated_device_without_nics_not_falsely_bumped(self):
+        """Regression: nic_derived_presence_condition() used to be callable
+        with a bare, unqualified mac_column - Devices (this function's own
+        inner scan) has a devMac column, so the unqualified reference always
+        bound to the function's own inner row instead of the caller's,
+        making every device with no NIC children of its own read as
+        NIC-derived-present as soon as *any other* device anywhere in
+        Devices legitimately had one. Two devices in one DB on purpose - a
+        single-device DB can't distinguish "per-row correct" from
+        "table-wide tautology"."""
+        conn = make_db()
+        parent_mac = "aa:22:00:00:00:03"
+        nic_mac = "bb:22:00:00:00:03"
+        unrelated_mac = "cc:22:00:00:00:03"
+        insert_device_from_dict(conn, make_device_dict(
+            parent_mac, devLastConnection="2020-01-01 00:00:00",
+            devParentMAC="", devParentRelType="", devReqNicsOnline=0,
+        ))
+        insert_device_from_dict(conn, make_device_dict(
+            nic_mac, devParentMAC=parent_mac, devParentRelType="nic", devReqNicsOnline=0,
+        ))
+        insert_current_scan_row_from_dict(
+            conn, make_current_scan_dict(nic_mac, scanPresence=1)
+        )
+        insert_device_from_dict(conn, make_device_dict(
+            unrelated_mac, devLastConnection="2020-01-01 00:00:00",
+            devParentMAC="", devParentRelType="", devReqNicsOnline=0,
+        ))
+        db = DummyDB(conn)
+
+        device_handling.update_devLastConnection_from_CurrentScan(db)
+
+        parent_row = conn.execute(
+            "SELECT devLastConnection FROM Devices WHERE devMac = ?", (parent_mac,)
+        ).fetchone()
+        unrelated_row = conn.execute(
+            "SELECT devLastConnection FROM Devices WHERE devMac = ?", (unrelated_mac,)
+        ).fetchone()
+        assert parent_row["devLastConnection"] != "2020-01-01 00:00:00", (
+            "the actual NIC-covered parent must still bump"
+        )
+        assert unrelated_row["devLastConnection"] == "2020-01-01 00:00:00", (
+            "a device with no NIC children of its own must not be bumped just "
+            "because some other device in Devices has NIC-derived presence"
+        )
+
 
 class TestNewConnectionsRespectsPresence:
     """insert_events()'s New Connections query must not fire Connected for a

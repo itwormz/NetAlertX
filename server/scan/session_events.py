@@ -210,7 +210,7 @@ def insert_events(db):
                       AND devPresentLastScan = 1
                       AND {_SQL_NOT_FORCED_ONLINE}
                       AND NOT ({current_scan_presence_condition("devMac")}
-                               OR {nic_derived_presence_condition("devMac")}) """)
+                               OR {nic_derived_presence_condition("DevicesView.devMac")}) """)
 
     # Check device down – sleeping devices whose sleep window has expired
     mylog("debug", "[Events] - 1b - Devices down (sleep expired)")
@@ -225,7 +225,7 @@ def insert_events(db):
                       AND devPresentLastScan = 0
                       AND {_SQL_NOT_FORCED_ONLINE}
                       AND NOT ({current_scan_presence_condition("devMac")}
-                               OR {nic_derived_presence_condition("devMac")})
+                               OR {nic_derived_presence_condition("DevicesView.devMac")})
                       AND NOT EXISTS (SELECT 1 FROM Events
                                       WHERE eveMac = devMac
                                         AND eveEventType = 'Device Down'
@@ -323,7 +323,7 @@ def insert_events(db):
                       AND devPresentLastScan = 1
                       AND {_SQL_NOT_FORCED_ONLINE}
                       AND NOT ({current_scan_presence_condition("devMac")}
-                               OR {nic_derived_presence_condition("devMac")}) """)
+                               OR {nic_derived_presence_condition("Devices.devMac")}) """)
 
     # Check IP Changed
     mylog("debug", "[Events] - 4 - IP Changes")

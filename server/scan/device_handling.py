@@ -242,7 +242,7 @@ def update_devLastConnection_from_CurrentScan(db):
         UPDATE Devices
         SET devLastConnection = '{startTime}'
         WHERE ({current_scan_presence_condition("devMac")}
-               OR {nic_derived_presence_condition("devMac")})
+               OR {nic_derived_presence_condition("Devices.devMac")})
     """)
 
 

@@ -28,6 +28,10 @@ Run through this before creating or editing any file under `test/`:
 2. Load the `testing-workflow` skill — any test additions or changes must follow it.
 3. Load any domain-specific skill relevant to the files being changed (e.g. `database-patterns` for DB writes, `settings-management` for config).
 
+## Verifying a Claim About Generated Code
+
+A finding that claims a specific SQL/code expansion result (an alias collision, a macro substitution, an interpolation outcome) can't be verified by checking the caller's own internal consistency alone - the caller can be perfectly self-consistent and still collide with something the callee does internally that isn't visible at the call site. Open and read the callee's actual definition before accepting or rejecting the claim, and if it's a runtime-behavior claim (not just syntax), run a minimal repro to confirm rather than reasoning about it in the abstract. A real case: a finding claimed two same-named aliases collided across a caller/helper boundary; checking only that the caller used its alias consistently looked like it disproved the finding, but the helper had its own same-named internal alias that was never inspected - the finding was correct.
+
 ## Comment Classification
 
 For each comment, determine:

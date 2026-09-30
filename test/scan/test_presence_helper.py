@@ -73,11 +73,20 @@ class TestNicDerivedHelperCorrectness:
     PRD Design §1. Same trust-boundary checks as current_scan_presence_condition()."""
 
     def test_returns_expected_sql_fragment(self):
-        result = nic_derived_presence_condition("devMac")
+        result = nic_derived_presence_condition("Devices.devMac")
         assert "EXISTS (" in result
         assert "SELECT 1 FROM Devices AS nic_presence_parent" in result
-        assert "nic_presence_parent.devMac = devMac" in result
+        assert "nic_presence_parent.devMac = Devices.devMac" in result
         assert "devReqNicsOnline" in result
+
+    @pytest.mark.parametrize("bad_value", ["devMac", "scanMac"])
+    def test_rejects_unqualified_column(self, bad_value):
+        """Devices (this function's own inner scan) has a devMac column, so a
+        bare mac_column always binds to the function's own inner row instead
+        of the caller's - see this module's docstring for the confirmed-live
+        failure mode this guards against."""
+        with pytest.raises(ValueError):
+            nic_derived_presence_condition(bad_value)
 
     @pytest.mark.parametrize("bad_value", [
         "devMac; DROP TABLE Devices--",

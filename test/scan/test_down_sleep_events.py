@@ -650,6 +650,31 @@ class TestInsertEventsNicDerivedPresence:
 
         assert "aa:11:00:00:00:03" in _down_event_macs(conn.cursor())
 
+    def test_unrelated_device_without_nics_not_falsely_suppressed(self):
+        """Regression: an unqualified mac_column in
+        nic_derived_presence_condition() used to bind to the function's own
+        inner Devices row instead of the caller's, so any device anywhere
+        with NIC-derived presence made every OTHER absent device (even one
+        with no NIC children at all) look NIC-derived-present too, silently
+        suppressing its real 'Device Down' event."""
+        conn = _make_db()
+        _setup_parent_with_nics(conn, "aa:11:00:00:00:11", [("bb:11:00:00:00:11", True)])
+        cur = conn.cursor()
+        _insert_device(cur, "cc:11:00:00:00:11", alert_down=1, present_last_scan=1)
+        conn.commit()
+
+        insert_events(DummyDB(conn))
+
+        down_macs = _down_event_macs(conn.cursor())
+        assert "aa:11:00:00:00:11" not in down_macs, (
+            "the actual NIC-covered parent must still be suppressed"
+        )
+        assert "cc:11:00:00:00:11" in down_macs, (
+            "a device with no NIC children of its own must still get its real "
+            "'Device Down' event, not be suppressed just because an unrelated "
+            "device elsewhere has NIC-derived presence"
+        )
+
     def test_all_mode_one_nic_missing_still_fires(self):
         """Mirrors test_req_all_mode_partial_nics_does_not_raise_absent_parent
         in test_nic_presence.py - same ANY/ALL contract, different pipeline point."""
