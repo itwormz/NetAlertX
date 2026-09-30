@@ -276,30 +276,20 @@ def insert_events(db):
                               )
                         """)
 
-    # Check NIC-derived New Connections / Down Reconnections - a parent with
-    # no direct CurrentScan row of its own this cycle, but whose NIC children
-    # satisfy nic_derived_presence_condition(), gets the Connected/Down
-    # Reconnected event the query above can't produce for it (its
-    # present_agg is built from CurrentScan, which this parent has no row
-    # in).
-    #
-    # Deliberately NOT via LatestEventsPerMAC (used by the query above):
-    # that view INNER JOINs CurrentScan, so it returns no row at all for a
-    # MAC with no CurrentScan row this cycle - exactly every MAC this query
-    # targets - which would make the Down Reconnected branch silently
-    # unreachable. The two correlated subqueries below read Events directly
-    # instead, sidestepping the gap entirely - no COALESCE needed for the
-    # "no prior event at all" case either: _connect_event_type_case()'s own
-    # ELSE branch already resolves to 'Connected' when both subqueries
-    # return NULL (NULL = 'Device Down' is NULL/falsy, same as the query
-    # above already relies on for a brand-new MAC's LEFT JOIN miss).
+    # NIC-derived New Connections/Down Reconnected: fires for a parent with
+    # no CurrentScan row of its own but whose NIC children satisfy
+    # nic_derived_presence_condition(). Reads Events directly instead of
+    # LatestEventsPerMAC, which INNER JOINs CurrentScan and would silently
+    # return no row for every MAC this query targets.
     mylog("debug", "[Events] - 2b - NIC-derived New Connections")
+    # ROWID DESC breaks eveDateTime ties (timeNowUTC() truncates to whole
+    # seconds) so both subqueries resolve to the same row.
     _last_event_type = """(SELECT eveEventType FROM Events
                             WHERE eveMac = nic_parent.devMac
-                            ORDER BY eveDateTime DESC LIMIT 1)"""
+                            ORDER BY eveDateTime DESC, ROWID DESC LIMIT 1)"""
     _last_event_pending = """(SELECT evePendingAlertEmail FROM Events
                                WHERE eveMac = nic_parent.devMac
-                               ORDER BY eveDateTime DESC LIMIT 1)"""
+                               ORDER BY eveDateTime DESC, ROWID DESC LIMIT 1)"""
     sql.execute(f"""INSERT OR IGNORE INTO Events (eveMac, eveIp, eveDateTime,
                         eveEventType, eveAdditionalInfo, evePendingAlertEmail)
                     SELECT nic_parent.devMac, nic_parent.devLastIP, '{startTime}',
