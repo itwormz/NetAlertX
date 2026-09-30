@@ -27,6 +27,24 @@ from const import NULL_EQUIVALENTS_SQL
 _SQL_NOT_FORCED_ONLINE = "LOWER(COALESCE(devForceStatus, '')) != 'online'"
 
 
+def _connect_event_type_case(event_type_expr, pending_expr):
+    """SQL CASE fragment shared by every insert_events() query that decides
+    Connected vs. Down Reconnected: 'Down Reconnected' iff the referenced
+    prior event was an unacknowledged Device Down, else 'Connected'.
+
+    event_type_expr/pending_expr are trusted, hardcoded SQL expressions (a
+    column reference or a scalar subquery) evaluating to the prior event's
+    eveEventType/evePendingAlertEmail - same trust-boundary contract as
+    current_scan_presence_condition()'s mac_column, not parameterized SQL.
+    Centralised here (like _SQL_NOT_FORCED_ONLINE above) so every connect-
+    side query classifies a reconnect the same way.
+    """
+    return f"""CASE
+                    WHEN {event_type_expr} = 'Device Down' AND {pending_expr} = 0 THEN 'Down Reconnected'
+                    ELSE 'Connected'
+                END"""
+
+
 # Make sure log level is initialized correctly
 Logger(get_setting_value("LOG_LEVEL"))
 
@@ -234,10 +252,7 @@ def insert_events(db):
                                             eveEventType, eveAdditionalInfo,
                                             evePendingAlertEmail)
                         SELECT present_agg.scanMac, present_agg.scanLastIP, '{startTime}',
-                                        CASE
-                                            WHEN last_event.eveEventType = 'Device Down' and  last_event.evePendingAlertEmail = 0 THEN 'Down Reconnected'
-                                            ELSE 'Connected'
-                                        END,
+                                        {_connect_event_type_case("last_event.eveEventType", "last_event.evePendingAlertEmail")},
                                         '',
                                         CASE WHEN quiet_agg.scanQuiet = 1 THEN 0 ELSE 1 END
                         FROM (
@@ -260,6 +275,51 @@ def insert_events(db):
                                 OR EXISTS (SELECT 1 FROM Devices WHERE devMac = present_agg.scanMac)
                               )
                         """)
+
+    # Check NIC-derived New Connections / Down Reconnections - a parent with
+    # no direct CurrentScan row of its own this cycle, but whose NIC children
+    # satisfy nic_derived_presence_condition(), gets the Connected/Down
+    # Reconnected event the query above can't produce for it (its
+    # present_agg is built from CurrentScan, which this parent has no row
+    # in).
+    #
+    # Deliberately NOT via LatestEventsPerMAC (used by the query above):
+    # that view INNER JOINs CurrentScan, so it returns no row at all for a
+    # MAC with no CurrentScan row this cycle - exactly every MAC this query
+    # targets - which would make the Down Reconnected branch silently
+    # unreachable. The two correlated subqueries below read Events directly
+    # instead, sidestepping the gap entirely - no COALESCE needed for the
+    # "no prior event at all" case either: _connect_event_type_case()'s own
+    # ELSE branch already resolves to 'Connected' when both subqueries
+    # return NULL (NULL = 'Device Down' is NULL/falsy, same as the query
+    # above already relies on for a brand-new MAC's LEFT JOIN miss).
+    mylog("debug", "[Events] - 2b - NIC-derived New Connections")
+    _last_event_type = """(SELECT eveEventType FROM Events
+                            WHERE eveMac = nic_parent.devMac
+                            ORDER BY eveDateTime DESC LIMIT 1)"""
+    _last_event_pending = """(SELECT evePendingAlertEmail FROM Events
+                               WHERE eveMac = nic_parent.devMac
+                               ORDER BY eveDateTime DESC LIMIT 1)"""
+    sql.execute(f"""INSERT OR IGNORE INTO Events (eveMac, eveIp, eveDateTime,
+                        eveEventType, eveAdditionalInfo, evePendingAlertEmail)
+                    SELECT nic_parent.devMac, nic_parent.devLastIP, '{startTime}',
+                        {_connect_event_type_case(_last_event_type, _last_event_pending)},
+                        '',
+                        CASE WHEN EXISTS (
+                            SELECT 1 FROM Devices AS nic
+                            WHERE nic.devParentMAC = nic_parent.devMac
+                              AND nic.devParentRelType = 'nic'
+                              AND {current_scan_presence_condition("nic.devMac")}
+                              AND EXISTS (SELECT 1 FROM CurrentScan AS quiet_scan
+                                          WHERE quiet_scan.scanMac = nic.devMac
+                                            AND quiet_scan.scanNotificationMode = 'quiet')
+                        ) THEN 0 ELSE 1 END
+                    FROM Devices AS nic_parent
+                    WHERE IFNULL(nic_parent.devParentRelType, '') != 'nic'
+                      AND nic_parent.devPresentLastScan = 0
+                      AND NOT {current_scan_presence_condition("nic_parent.devMac")}
+                      AND {nic_derived_presence_condition("nic_parent.devMac")}
+                    """)
 
     # Check disconnections
     mylog("debug", "[Events] - 3 - Disconnections")

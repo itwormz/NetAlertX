@@ -145,21 +145,27 @@ class TestConsumersCallTheHelper:
     def test_update_dev_last_connection_calls_helper_once(self):
         assert _call_count(device_handling.update_devLastConnection_from_CurrentScan) == 1
 
-    def test_insert_events_calls_helper_at_least_three_times(self):
-        """insert_events() contains four queries total - Device Down (x2),
-        Disconnected, and New Connections. Only the first three are plain
-        boolean-predicate sites; New Connections keeps its own present_agg/
-        MIN(scanLastIP) aggregation on purpose (see module docstring), so
-        this asserts >= 3, not == 4."""
-        assert _call_count(session_events.insert_events) >= 3
+    def test_insert_events_calls_helper_at_least_five_times(self):
+        """insert_events() contains five queries that use current_scan_presence_condition()
+        directly - Device Down (x2), Disconnected, and the NIC-derived reconnect
+        query (nic-parent-reconnect-events PRD, two calls: one excluding
+        directly-present parents, one nested in its quiet-check). The mainline
+        New Connections query keeps its own present_agg/MIN(scanLastIP)
+        aggregation on purpose (see module docstring) and doesn't call the
+        helper directly - it goes through _connect_event_type_case() instead
+        for classification, not presence - so this asserts >= 5, not == 5."""
+        assert _call_count(session_events.insert_events) >= 5
 
 
 class TestConsumersCallTheNicHelper:
-    """Guards the four sites nic_derived_presence_condition() was OR-composed
-    into (nic-parent-orphan-disconnect-events PRD) - both Device Down queries,
-    Disconnected, and update_devLastConnection_from_CurrentScan(). New
-    Connections/IP Changed are deliberately not touched - see that PRD's
-    Non-goals."""
+    """Guards the five sites nic_derived_presence_condition() was OR-composed
+    into: both Device Down queries, Disconnected, and
+    update_devLastConnection_from_CurrentScan() (nic-parent-orphan-disconnect-events
+    PRD), plus the NIC-derived reconnect query added by nic-parent-reconnect-events
+    (one call, gating which parents qualify - not the same call as its
+    quiet-check, which uses current_scan_presence_condition() instead, guarded
+    above). The mainline New Connections/IP Changed queries are deliberately
+    not touched - see that PRD's Non-goals."""
 
     def test_update_dev_last_connection_calls_nic_helper_once(self):
         assert _call_count(
@@ -167,9 +173,23 @@ class TestConsumersCallTheNicHelper:
             target_name="nic_derived_presence_condition",
         ) == 1
 
-    def test_insert_events_calls_nic_helper_exactly_three_times(self):
-        """Both Device Down queries + Disconnected - not New Connections/IP Changed."""
+    def test_insert_events_calls_nic_helper_exactly_four_times(self):
+        """Both Device Down queries + Disconnected + the NIC-derived reconnect
+        query - not New Connections/IP Changed."""
         assert _call_count(
             session_events.insert_events,
             target_name="nic_derived_presence_condition",
-        ) == 3
+        ) == 4
+
+
+class TestConsumersCallTheConnectEventTypeCaseHelper:
+    """Guards _connect_event_type_case() (nic-parent-reconnect-events PRD) -
+    both the mainline New Connections query and the new NIC-derived reconnect
+    query classify Connected vs. Down Reconnected through this one shared
+    helper, not two independent inline CASE expressions."""
+
+    def test_insert_events_calls_connect_event_type_case_exactly_twice(self):
+        assert _call_count(
+            session_events.insert_events,
+            target_name="_connect_event_type_case",
+        ) == 2
