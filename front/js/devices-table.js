@@ -498,10 +498,11 @@ function initializeDatatable (status) {
       // Dates
       {targets: [mapIndx(COL.devFirstConnection), mapIndx(COL.devLastConnection)],
         'createdCell': function (td, cellData, rowData, row, col) {
-          var result = cellData.toString(); // Convert to string
-          if (result.includes("+")) { // Check if timezone offset is present
-              result = result.split('+')[0]; // Remove timezone offset
-          }
+          // devFirstConnection/devLastConnection are DB NOT NULL with no default,
+          // but that still permits an empty string (e.g. stale rows from an older
+          // schema/version) - skip localizeTimestamp() for that case instead of
+          // showing its "Failed conversion" fallback for what is really just "no value".
+          var result = isEmpty(cellData) ? '' : localizeTimestamp(cellData);
           $(td).html (translateHTMLcodes (result));
       } },
 
