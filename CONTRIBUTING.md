@@ -95,4 +95,4 @@ By participating, you agree to follow the [Code of Conduct](./CODE_OF_CONDUCT.md
 If you have more in-depth questions or want to discuss contributing in other ways, feel free to reach out at:
 [support@netalertx.com](mailto:support@netalertx.com?subject=NetAlertX%20Contribution)
 
-Every contribution, big or small, is appreaciated! 💙
+Every contribution, big or small, is appreciated! 💙
