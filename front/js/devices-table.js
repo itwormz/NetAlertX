@@ -496,6 +496,11 @@ function initializeDatatable (status) {
       } },
 
       // Dates
+      /**
+       * Renders the First Connection / Last Offline column cells: an empty
+       * cellData renders as a blank cell, otherwise as cellData localized
+       * into the user's configured timezone/locale.
+       */
       {targets: [mapIndx(COL.devFirstConnection), mapIndx(COL.devLastConnection)],
         'createdCell': function (td, cellData, rowData, row, col) {
           // devFirstConnection/devLastConnection are DB NOT NULL with no default,

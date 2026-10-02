@@ -41,8 +41,11 @@ with patch("helper.get_setting_value", return_value="UTC"), \
 # Shared helpers
 # ---------------------------------------------------------------------------
 
-def _l3(addr="192.168.1.10", reachable=True, last_time_reachable=1700000000):
-    return {"addr": addr, "reachable": reachable, "last_time_reachable": last_time_reachable}
+def _l3(addr="192.168.1.10", reachable=True, active=None, last_time_reachable=1700000000):
+    entry = {"addr": addr, "reachable": reachable, "last_time_reachable": last_time_reachable}
+    if active is not None:
+        entry["active"] = active
+    return entry
 
 
 def _host(mac="aa:bb:cc:dd:ee:01", active=True, l3connectivities=None,
@@ -103,22 +106,44 @@ class TestSelectL3EntriesForPresence:
         result = freebox.select_l3_entries_for_presence(host)
         assert [e["addr"] for e in result] == ["10.0.0.1"]
 
-    def test_sentinel_ip_when_active_but_no_l3_entries_at_all(self):
+    def test_prefers_active_entry_among_unreachable_when_available(self):
+        """Each l3connectivities entry has its own 'active' flag, independent
+        of 'reachable' (per the Freebox API's LanHostL3Connectivity schema) -
+        when nothing is reachable, an entry Freebox still marks active is a
+        better guess than an arbitrary stale one. The active entry is placed
+        second on purpose, so a naive "just take the first one" fallback
+        would fail this test."""
+        l3_entries = [_l3("10.0.0.1", reachable=False, active=False),
+                      _l3("10.0.0.2", reachable=False, active=True)]
+        host = _host(active=True, l3connectivities=l3_entries)
+        result = freebox.select_l3_entries_for_presence(host)
+        assert [e["addr"] for e in result] == ["10.0.0.2"]
+
+    def test_falls_back_to_first_entry_when_none_are_active_either(self):
+        l3_entries = [_l3("10.0.0.1", reachable=False), _l3("10.0.0.2", reachable=False)]
+        host = _host(active=True, l3connectivities=l3_entries)
+        result = freebox.select_l3_entries_for_presence(host)
+        assert [e["addr"] for e in result] == ["10.0.0.1"]
+
+    def test_empty_entry_when_active_but_no_l3_entries_at_all(self):
+        """No fabricated '0.0.0.0' address or epoch-zero timestamp when there's
+        genuinely no L3 data - an empty dict lets main() leave secondaryId/
+        watched4 blank instead of writing misleading placeholder values."""
         host = _host(active=True, l3connectivities=[])
         result = freebox.select_l3_entries_for_presence(host)
-        assert [e["addr"] for e in result] == ["0.0.0.0"]
+        assert result == [{}]
 
-    def test_sentinel_ip_when_l3connectivities_missing_entirely(self):
+    def test_empty_entry_when_l3connectivities_missing_entirely(self):
         host = _host(active=True)  # l3connectivities key omitted entirely
         assert "l3connectivities" not in host
         result = freebox.select_l3_entries_for_presence(host)
-        assert [e["addr"] for e in result] == ["0.0.0.0"]
+        assert result == [{}]
 
-    def test_non_list_l3connectivities_treated_as_absent(self):
+    def test_empty_entry_when_l3connectivities_not_a_list(self):
         host = _host(active=True)
         host["l3connectivities"] = "not-a-list"
         result = freebox.select_l3_entries_for_presence(host)
-        assert [e["addr"] for e in result] == ["0.0.0.0"]
+        assert result == [{}]
 
 
 # ===========================================================================
@@ -170,6 +195,26 @@ class TestMainHostLoop:
 
         assert result == 0
         assert mock_po.add_object.call_count == 0
+
+    def test_active_host_no_l3_entries_emits_blank_ip_and_timestamp(self):
+        """A host with active=True but no l3connectivities at all still gets
+        a presence row (primaryId/MAC alone is enough to assert presence),
+        but must not fabricate a '0.0.0.0' address or an epoch-zero
+        'last seen' timestamp - both would be misleading for data we don't
+        actually have."""
+        hosts = [_host(mac="aa:bb:cc:dd:ee:05", active=True, l3connectivities=[])]
+        mock_po = MagicMock()
+
+        with self._patch_settings(), \
+             patch.object(freebox, "get_device_data", AsyncMock(return_value=(None, hosts))), \
+             patch.object(freebox, "plugin_objects", mock_po):
+            result = freebox.main()
+
+        assert result == 0
+        assert mock_po.add_object.call_count == 1
+        call = mock_po.add_object.call_args_list[0]
+        assert call.kwargs["secondaryId"] == ""
+        assert call.kwargs["watched4"] == ""
 
     def test_reachable_host_unchanged(self):
         """Regression guard: the common/working case (at least one reachable

@@ -40,7 +40,7 @@ Use NetAlertX to spot shadow IT, unauthorized hardware, IPAM drift, and other ch
 ## Quick Start
 
 > [!WARNING]
-> **Important:** If upgrading an older installation read the [Migration guide](https://docs.netalertx.com/MIGRATION/?h=migrat#12-migration-from-netalertx-v25524) for detailed instructions.
+> **Important:** If upgrading an older installation read the [Migration guide](https://docs.netalertx.com/MIGRATION/) for detailed instructions - it lists each migration scenario by version, so pick the one matching your installed version.
 
 Start NetAlertX in seconds with Docker:
 
