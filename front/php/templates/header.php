@@ -408,7 +408,7 @@
           <a href="settings.php" onclick="openUrl(['./settings.php'])">
           <!-- Settings saved, backend still applying them -->
           <div class="info-icon-nav myhidden" id="settingsPendingReload" title="<?= lang('settings_pending_reload');?>">
-            <i class="fa-solid fa-spinner fa-spin"></i>
+            <i class="fa-solid fa-floppy-disk fa-beat"></i>
           </div>
           <i class="fa fa-fw fa-cog"></i> <span><?= lang('Navigation_Settings');?></span>
             <span class="pull-right-container">
