@@ -281,7 +281,7 @@ function initTree(myHierarchy)
         // generate +/- icon if node has children nodes
         collapseExpandHtml = nodeData.data.hasChildren ?
                       `<div class="netCollapse"
-                            style="font-size:${nodeHeightPx/2}px;top:${Math.floor(nodeHeightPx / 4)}px"
+                            style="font-size:${nodeHeightPx/2}px;margin-top:-${nodeHeightPx - Math.floor(nodeHeightPx / 4)}px"
                             data-mytreepath="${nodeData.data.path}"
                             data-mytreemac="${nodeData.data.devMac}">
                         <i class="fa fa-${collapseExpandIcon} pointer"></i>
