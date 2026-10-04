@@ -1924,6 +1924,8 @@ textarea[readonly],
 
 #networkTree .box
 {
+    /* Positioned HTML inside SVG foreignObject is misplaced by WebKit. */
+    position:static;
     border-width:1px;
     border-top-color:grey;
     padding:0px;
@@ -1946,7 +1948,7 @@ textarea[readonly],
 }
 #networkTree .netNodeText
 {
-    position: absolute;
+    position: static;
 }
 #networkTree .netPort
 {
@@ -1957,7 +1959,8 @@ textarea[readonly],
 
 #networkTree .portBckgIcon
 {
-    opacity: 0.3;
+    color: var(--color-gray);
+    color: color-mix(in srgb, currentColor 30%, transparent);
     display: initial;
     float: left;
     width: 1em;
@@ -2034,8 +2037,8 @@ textarea[readonly],
 
 #networkTree .netCollapse
 {
-    position: absolute;
-    right: 0;
+    position: static;
+    float: right;
     margin-right: -3px;
 }
 
@@ -2058,9 +2061,12 @@ textarea[readonly],
 
 #networkTree .network-hw-icon
 {
-    position: absolute;
+    position: static;
+    display: inline-block;
     margin-left: -0.4em;
-    opacity: 0.3;
+    /* Alpha in the color avoids WebKit's foreignObject opacity layer bug. */
+    color: var(--color-gray);
+    color: color-mix(in srgb, currentColor 30%, transparent);
     margin-top: 0.1em;
 }
 
