@@ -34,6 +34,16 @@ Before implementing any feature that reads or writes the `Devices` table, audit 
 
 ---
 
+## Device Identity: `devMac` (today's PK) vs `devGUID` (the intended durable identity)
+
+`devMac STRING(50) PRIMARY KEY NOT NULL COLLATE NOCASE` (`server/db/schema/app.sql`) is still the literal SQL primary key. `devGUID TEXT` (indexed via `idx_dev_guid`) is a plain column today, but per the maintainer it's the intended long-term durable identity, since MAC has known limits as an identifier that `devGUID` doesn't share (privacy MAC randomization on iOS/Android/Windows, virtualized/containerized interfaces sharing one physical MAC, multi-homed devices presenting several). `devGUID` already backs device-history grouping (`server/models/device_history_instance.py`) and workflow trigger lookups (`server/workflows/triggers.py`).
+
+This is a gradual, in-progress migration, not a flag day. New code should resolve device identity from an already-fetched device row (which carries both `devMac` and `devGUID`) rather than assuming either field is *the* identifier, so it doesn't need rework as the migration progresses.
+
+**One thing that will never migrate, regardless of how far the PK change goes:** `Plugins_Objects.objectPrimaryId`, `CurrentScan.scanMac`, and `Events.eveMac` are permanently MAC-keyed. A plugin discovers a device by scanning the network, so it can only ever report a MAC address, never an app-internal `devGUID` NetAlertX hasn't assigned yet at scan time. This isn't a migration gap to eventually close; it's a structural ceiling on what network-originated data can ever identify a device by.
+
+---
+
 ## `*Source` Fields — Attribution System
 
 The `FIELD_SOURCE_MAP` in `server/db/authoritative_handler.py` defines 10 fields that carry write attribution via paired `*Source` columns:
